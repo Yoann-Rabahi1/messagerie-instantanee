@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-app = FastAPI()
+app = FastAPI(title="Messagerie instantanée")
 
 @app.get("/")
 def test_route():
