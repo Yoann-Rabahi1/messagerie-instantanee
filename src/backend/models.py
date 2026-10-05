@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
+from datetime import datetime
 
 class Utilisateur(Base):
     __tablename__ = "utilisateur"
@@ -23,6 +24,7 @@ class Message(Base):
     expediteur_id = Column(Integer, ForeignKey("utilisateur.user_id"), nullable=False)
     destinataire_id = Column(Integer, ForeignKey("utilisateur.user_id"), nullable=False)
     message_contenu = Column(Text, nullable=False)
+    date_envoi = Column(DateTime, default=datetime.now, nullable=False)
 
     # ⚠️ LES NOMS DANS back_populates DOIVENT EXISTER DANS UTILISATEUR
     expediteur = relationship("Utilisateur", foreign_keys=[expediteur_id], back_populates="messages_envoyes")
