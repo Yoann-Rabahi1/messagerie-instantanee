@@ -9,12 +9,19 @@ export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [currentUser, setCurrentUser] = useState<Utilisateur | null>(null);
   const [isSigningUp, setIsSigningUp] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(!!token);
 
   useEffect(() => {
     if (token) {
+      setLoading(true);
       API.get<Utilisateur>('/me')
-        .then((res) => setCurrentUser(res.data))
-        .catch(() => handleLogout());
+        .then((res) => {
+          setCurrentUser(res.data);
+        })
+        .catch(() => handleLogout())
+        .finally(() => setLoading(false));
+    } else {
+      setLoading(false);
     }
   }, [token]);
 
@@ -37,21 +44,19 @@ export default function App() {
     return <Login onLogin={handleLogin} onSwitchToSignup={() => setIsSigningUp(true)} />;
   }
 
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <h2>Messagerie Instantanée</h2>
-        <div>
-          <span style={{ marginRight: '15px' }}>
-            Connecté : <strong>{currentUser?.prenom_user} {currentUser?.nom_user}</strong>
-          </span>
-          <button onClick={handleLogout} style={{ padding: '8px 16px', cursor: 'pointer' }}>
-            Déconnexion
-          </button>
-        </div>
-      </header>
+  if (loading || !currentUser) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+        <p>Chargement de la session...</p>
+      </div>
+    );
+  }
 
-      {currentUser && <ChatWindow currentUser={currentUser} />}
-    </div>
+  return (
+    <ChatWindow
+      currentUser={currentUser}
+      token={token}
+      onLogout={handleLogout}
+    />
   );
 }

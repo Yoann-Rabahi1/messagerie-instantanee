@@ -1,37 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { Utilisateur, Message } from '../types';
 import './ChatWindow.css';
 
-export interface User {
-  user_id: number;
-  prenom: string;
-  nom: string;
-  email: string;
-}
-
-export interface Message {
-  message_id: number;
-  expediteur_id: number;
-  destinataire_id: number;
-  message_contenu: string;
-  date_envoi: string;
-}
-
 interface ChatWindowProps {
-  currentUser: User;
+  currentUser: Utilisateur;
   token: string;
   onLogout: () => void;
 }
 
 export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLogout }) => {
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<Utilisateur[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<Set<number>>(new Set());
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [selectedUser, setSelectedUser] = useState<Utilisateur | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
 
   const socketRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Défilement automatique vers le dernier message
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -40,7 +27,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
     scrollToBottom();
   }, [messages]);
 
-  // 1. Récupération des utilisateurs
+  // 1. Récupération de tous les utilisateurs
   useEffect(() => {
     const fetchUsers = async () => {
       try {
@@ -54,14 +41,15 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
         }
 
         if (response.ok) {
-          const data: User[] = await response.json();
+          const data: Utilisateur[] = await response.json();
+          // Exclure l'utilisateur courant de la liste
           const otherUsers = data.filter(
             (u) => Number(u.user_id) !== Number(currentUser.user_id)
           );
           setUsers(otherUsers);
         }
       } catch (error) {
-        console.error('Erreur utilisateurs:', error);
+        console.error('Erreur lors de la récupération des utilisateurs:', error);
       }
     };
 
@@ -70,7 +58,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
     }
   }, [currentUser, token, onLogout]);
 
-  // 2. Récupération des messages
+  // 2. Récupération de l'historique de conversation
   useEffect(() => {
     if (!selectedUser || !token) return;
 
@@ -90,52 +78,85 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
           setMessages(data);
         }
       } catch (error) {
-        console.error('Erreur messages:', error);
+        console.error('Erreur lors de la récupération des messages:', error);
       }
     };
 
     fetchMessages();
   }, [selectedUser, token, onLogout]);
 
-  // 3. WebSocket
+  // 3. Connexion WebSocket unique (Gestion présence + Messages temps réel)
   useEffect(() => {
     if (!currentUser?.user_id) return;
 
     const ws = new WebSocket(`ws://localhost:8000/ws/${currentUser.user_id}`);
 
+    ws.onopen = () => {
+      console.log('WebSocket connecté');
+    };
+
     ws.onmessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
 
-        if (data.type === 'user_status') {
+        // A. Mise à jour de la liste des utilisateurs en ligne
+        if (data.type === 'online_users' && Array.isArray(data.users)) {
+          setOnlineUsers(new Set(data.users.map((id: number | string) => Number(id))));
+        } else if (data.type === 'user_status') {
+          const userId = Number(data.user_id);
           setOnlineUsers((prev) => {
             const updated = new Set(prev);
             if (data.online) {
-              updated.add(Number(data.user_id));
+              updated.add(userId);
             } else {
-              updated.delete(Number(data.user_id));
+              updated.delete(userId);
             }
             return updated;
           });
-        } else if (data.type === 'chat_message' || data.message_id) {
-          const receivedMsg: Message = data;
-          setMessages((prev) => {
-            const exists = prev.some((m) => m.message_id === receivedMsg.message_id);
-            if (exists) return prev;
+        }
+        // B. Réception d'un nouveau message
+        else if (data.type === 'chat_message' || data.message_id) {
+          const receivedMsg: Message = data.message || data;
 
+          setMessages((prevMessages) => {
+            // Remplace un message temporaire (même ID ou même contenu récent) ou évite les doublons
+            const exists = prevMessages.some(
+              (m) =>
+                m.message_id === receivedMsg.message_id ||
+                (m.message_id > 1000000000000 &&
+                  m.expediteur_id === receivedMsg.expediteur_id &&
+                  m.message_contenu === receivedMsg.message_contenu)
+            );
+
+            if (exists) {
+              return prevMessages.map((m) =>
+                m.message_id > 1000000000000 &&
+                m.expediteur_id === receivedMsg.expediteur_id &&
+                m.message_contenu === receivedMsg.message_contenu
+                  ? receivedMsg
+                  : m
+              );
+            }
+
+            // Affiche le message si la discussion avec cet utilisateur est active
             if (
               selectedUser &&
               (Number(receivedMsg.expediteur_id) === Number(selectedUser.user_id) ||
                 Number(receivedMsg.destinataire_id) === Number(selectedUser.user_id))
             ) {
-              return [...prev, receivedMsg];
+              return [...prevMessages, receivedMsg];
             }
-            return prev;
+
+            return prevMessages;
           });
         }
       } catch (e) {
-        console.error('Erreur parsing WebSocket:', e);
+        console.error('Erreur parsing message WebSocket:', e);
       }
+    };
+
+    ws.onerror = (error) => {
+      console.error('Erreur WebSocket:', error);
     };
 
     socketRef.current = ws;
@@ -147,21 +168,39 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
         ws.onopen = () => ws.close();
       }
     };
-  }, [currentUser?.user_id, selectedUser?.user_id]);
+  }, [currentUser?.user_id, selectedUser]);
 
-  // 4. Envoi de message
+  // 4. Envoi de message avec affichage immédiat côté expéditeur
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedUser) return;
 
+    const content = newMessage.trim();
+
+    // ID temporaire unique
+    const tempId = Date.now();
+    const tempMessage: Message = {
+      message_id: tempId,
+      expediteur_id: currentUser.user_id,
+      destinataire_id: selectedUser.user_id,
+      message_contenu: content,
+      date_envoi: new Date().toISOString(),
+    };
+
+    // 1. Mise à jour immédiate de l'interface locale
+    setMessages((prev) => [...prev, tempMessage]);
+    setNewMessage('');
+
+    // 2. Envoi via WebSocket
     const payload = {
       destinataire_id: selectedUser.user_id,
-      message_contenu: newMessage.trim(),
+      message_contenu: content,
     };
 
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify(payload));
-      setNewMessage('');
+    } else {
+      console.error("Le WebSocket n'est pas ouvert. Impossible d'envoyer le message.");
     }
   };
 
@@ -171,7 +210,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
       <div className="sidebar">
         <div className="sidebar-header">
           <h3>
-            {currentUser.prenom} {currentUser.nom}
+            {currentUser.prenom_user} {currentUser.nom_user}
           </h3>
           <button onClick={onLogout} className="btn-logout">
             Déconnexion
@@ -194,7 +233,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
                   className={`user-item ${isSelected ? 'selected' : ''}`}
                 >
                   <span style={{ fontWeight: isSelected ? 'bold' : 'normal' }}>
-                    {u.prenom} {u.nom}
+                    {u.prenom_user} {u.nom_user}
                   </span>
 
                   <div className="status-container">
@@ -210,19 +249,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ currentUser, token, onLo
         </div>
       </div>
 
-      {/* Zone principale */}
+      {/* Zone de chat principale */}
       <div className="chat-main">
         {selectedUser ? (
           <>
             <div className="chat-header">
               <h3>
-                {selectedUser.prenom} {selectedUser.nom}
+                {selectedUser.prenom_user} {selectedUser.nom_user}
               </h3>
-              <span
-                className={`status-indicator ${
-                  onlineUsers.has(Number(selectedUser.user_id)) ? 'online' : ''
-                }`}
-              />
+              <div className="status-container">
+                <span
+                  className={`status-indicator ${
+                    onlineUsers.has(Number(selectedUser.user_id)) ? 'online' : ''
+                  }`}
+                />
+                <span
+                  className={`status-text ${
+                    onlineUsers.has(Number(selectedUser.user_id)) ? 'online' : ''
+                  }`}
+                >
+                  {onlineUsers.has(Number(selectedUser.user_id)) ? 'En ligne' : 'Hors ligne'}
+                </span>
+              </div>
             </div>
 
             <div className="chat-messages">
